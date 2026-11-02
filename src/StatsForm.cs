@@ -15,6 +15,16 @@ namespace PowerMonitor
         public double Wh;
     }
 
+    internal sealed class MonthStat
+    {
+        public DateTime Month;
+        public double Wh, PeakW, Cost, Minutes;
+        public int Sessions;
+
+        public double AvgW { get { return Minutes > 0 ? Wh * 60.0 / Minutes : 0; } }
+        public double Kwh { get { return Wh / 1000.0; } }
+    }
+
     internal sealed class StatsForm : Form
     {
         const int DesignW = 880;
@@ -36,7 +46,7 @@ namespace PowerMonitor
         RectangleF _rClose, _rView0, _rView1, _rExport, _rRefresh, _rPath;
         readonly RectangleF[] _rRange = new RectangleF[4];
         readonly RectangleF[] _rCard = new RectangleF[5];
-        RectangleF _rChart, _rDaily, _rDonut, _rTable;
+        RectangleF _rChart, _rDaily, _rDonut, _rTable, _rMonths, _rView2;
 
         // 绘制用数据
         List<HistoryBucket> _plot = new List<HistoryBucket>();
@@ -47,6 +57,8 @@ namespace PowerMonitor
         DateTime _peakAt;
         int _activeMinutes;
         List<HistorySession> _sessions = new List<HistorySession>();
+        List<MonthStat> _months = new List<MonthStat>();
+        int _monthScroll;
 
         static readonly Color Bg1 = Color.FromArgb(255, 33, 37, 45);
         static readonly Color Bg2 = Color.FromArgb(255, 15, 17, 21);
@@ -249,6 +261,8 @@ namespace PowerMonitor
 
             _sessions = _store.Sessions();
             _sessions.Sort(delegate(HistorySession a, HistorySession b) { return b.Boot.CompareTo(a.Boot); });
+
+            BuildMonths(all);
         }
 
         static readonly double[] NiceSteps = new double[] { 1, 2, 2.5, 5, 10, 12.5, 15, 20, 25, 30, 40, 50, 75, 100, 125, 150, 200, 250, 300, 400, 500, 750, 1000, 1500, 2000, 3000 };
@@ -317,7 +331,9 @@ namespace PowerMonitor
                 g.DrawRectangle(edge, 0, 0, w - 1, h - 1);
 
             DrawHeader(g);
-            if (_view == 0) DrawOverview(g); else DrawSessions(g);
+            if (_view == 0) DrawOverview(g);
+            else if (_view == 1) DrawSessions(g);
+            else DrawMonths(g);
 
             using (Pen sep = new Pen(Color.FromArgb(18, 255, 255, 255), 1f))
                 g.DrawLine(sep, S(22), S(DesignH - 52), S(DesignW - 22), S(DesignH - 52));
@@ -331,6 +347,8 @@ namespace PowerMonitor
             _rClose = new RectangleF(w - S(46), S(13), S(26), S(26));
             _rView0 = new RectangleF(pad, S(58), S(76), S(30));
             _rView1 = new RectangleF(pad + S(84), S(58), S(92), S(30));
+            _rView2 = new RectangleF(pad + S(184), S(58), S(92), S(30));
+            _rMonths = new RectangleF(pad, S(182), w - pad * 2, S(DesignH - 182 - 62));
 
             float[] rw = new float[] { S(84), S(58), S(58), S(66) };
             float rx = w - pad;
@@ -380,9 +398,11 @@ namespace PowerMonitor
 
             Pill(g, _rView0, "概览", _view == 0);
             Pill(g, _rView1, "会话记录", _view == 1);
+            Pill(g, _rView2, "月度账单", _view == 2);
 
             string[] names = new string[] { "本次开机", "今天", "近 7 天", "近 30 天" };
-            for (int i = 0; i < 4; i++) Pill(g, _rRange[i], names[i], _range == i && _view == 0);
+            if (_view == 0)
+                for (int i = 0; i < 4; i++) Pill(g, _rRange[i], names[i], _range == i);
         }
 
         void Pill(Graphics g, RectangleF r, string text, bool active)
@@ -773,6 +793,218 @@ namespace PowerMonitor
             }
         }
 
+        void BuildMonths(List<HistoryBucket> all)
+        {
+            DateTime cur = new DateTime(DateTime.Today.Year, DateTime.Today.Month, 1);
+            _months = new List<MonthStat>();
+            for (int i = 11; i >= 0; i--)
+            {
+                MonthStat st = new MonthStat();
+                st.Month = cur.AddMonths(-i);
+                _months.Add(st);
+            }
+            for (int i = 0; i < all.Count; i++)
+            {
+                HistoryBucket b = all[i];
+                DateTime key = new DateTime(b.Ts.Year, b.Ts.Month, 1);
+                MonthStat st = FindMonth(key);
+                if (st == null) continue;
+                st.Wh += b.Wh;
+                if (b.MaxW > st.PeakW) st.PeakW = b.MaxW;
+                st.Minutes += b.Weight;
+                st.Cost += b.Wh / 1000.0 * _cfg.PricePerKwh;
+            }
+            for (int i = 0; i < _sessions.Count; i++)
+            {
+                HistorySession s = _sessions[i];
+                MonthStat st = FindMonth(new DateTime(s.Boot.Year, s.Boot.Month, 1));
+                if (st != null) st.Sessions++;
+            }
+        }
+
+        MonthStat FindMonth(DateTime key)
+        {
+            for (int i = 0; i < _months.Count; i++) if (_months[i].Month == key) return _months[i];
+            return null;
+        }
+
+        void DrawMonths(Graphics g)
+        {
+            MonthStat cur = FindMonth(new DateTime(DateTime.Today.Year, DateTime.Today.Month, 1));
+            if (cur == null) cur = new MonthStat();
+
+            DateTime today = DateTime.Today;
+            int daysInMonth = DateTime.DaysInMonth(today.Year, today.Month);
+            int elapsed = today.Day;
+            double projected = elapsed > 0 ? cur.Cost * daysInMonth / (double)elapsed : 0;
+            double budget = _cfg.MonthlyBudgetYuan;
+            double pct = budget > 0 ? cur.Cost / budget * 100.0 : 0;
+
+            string v1 = cur.Kwh.ToString("0.00", CultureInfo.InvariantCulture) + " kWh";
+            string s1 = "开机 " + cur.Sessions + " 次 · 运行 " + FormatMinutes(cur.Minutes);
+            string v2 = "¥" + cur.Cost.ToString("0.00", CultureInfo.InvariantCulture);
+            string s2 = "¥" + _cfg.PricePerKwh.ToString("0.00", CultureInfo.InvariantCulture) + " / kWh";
+            string v3 = budget > 0 ? pct.ToString("0", CultureInfo.InvariantCulture) + " %" : "—";
+            string s3 = budget > 0
+                ? "¥" + cur.Cost.ToString("0.00", CultureInfo.InvariantCulture) + " / ¥" + budget.ToString("0.00", CultureInfo.InvariantCulture)
+                : "在 settings.ini 设置预算";
+            string v4 = "¥" + projected.ToString("0.00", CultureInfo.InvariantCulture);
+            string s4 = "按已过 " + elapsed + "/" + daysInMonth + " 天外推";
+            string v5 = cur.PeakW.ToString("0.0", CultureInfo.InvariantCulture) + " W";
+            string s5 = cur.Kwh > 0 ? "本月峰值" : "本月暂无数据";
+
+            Color budgetColor = budget <= 0 ? Accent
+                              : pct >= 100 ? Color.FromArgb(255, 255, 96, 92)
+                              : pct >= 80 ? Color.FromArgb(255, 255, 178, 46)
+                              : Color.FromArgb(255, 80, 205, 140);
+
+            Card(g, _rCard[0], "本月用电", v1, s1, Accent);
+            Card(g, _rCard[1], "本月电费", v2, s2, Color.FromArgb(255, 255, 128, 100));
+            CardBar(g, _rCard[2], "预算进度", v3, s3, budgetColor,
+                budget > 0 ? Math.Min(1.0, cur.Cost / budget) : 0);
+            Card(g, _rCard[3], "预计月末电费", v4, s4, AccentSoft);
+            Card(g, _rCard[4], "本月峰值", v5, s5, Color.FromArgb(255, 96, 200, 240));
+
+            DrawMonthTable(g);
+        }
+
+        string FormatMinutes(double minutes)
+        {
+            if (minutes < 1) return "0 分";
+            if (minutes < 60) return ((int)Math.Round(minutes)) + " 分";
+            int h = (int)(minutes / 60);
+            int m = (int)Math.Round(minutes - h * 60);
+            return h + " 小时 " + m + " 分";
+        }
+
+        // 带进度条的卡片
+        void CardBar(Graphics g, RectangleF r, string label, string value, string sub, Color accent, double frac)
+        {
+            Card(g, r, label, value, sub, accent);
+            float x = r.Left + S(14);
+            float w = r.Width - S(28);
+            RectangleF track = new RectangleF(x, r.Bottom - S(8), w, S(3));
+            using (GraphicsPath p = IconFactory.RoundRect(track, S(1.5f)))
+            using (SolidBrush b = new SolidBrush(Color.FromArgb(26, 255, 255, 255)))
+                g.FillPath(b, p);
+            frac = Math.Max(0, Math.Min(1, frac));
+            if (frac > 0.005)
+            {
+                RectangleF fill = new RectangleF(track.X, track.Y, Math.Max(S(3), (float)(track.Width * frac)), track.Height);
+                using (GraphicsPath p = IconFactory.RoundRect(fill, S(1.5f)))
+                using (SolidBrush b = new SolidBrush(accent))
+                    g.FillPath(b, p);
+            }
+        }
+
+        void DrawMonthTable(Graphics g)
+        {
+            RectangleF r = _rMonths;
+            Panel(g, r, "月度汇总", "最近 12 个月");
+
+            float top = r.Top + S(38);
+            float left = r.Left + S(14);
+            float right = r.Right - S(14);
+            string[] head = new string[] { "月份", "用电", "电费", "平均", "峰值", "运行", "开机", "" };
+            float[] colW = new float[] { S(96), S(104), S(90), S(86), S(86), S(104), S(64), S(180) };
+            float x = left;
+            using (SolidBrush b = new SolidBrush(TextTer))
+            {
+                for (int i = 0; i < head.Length; i++)
+                {
+                    using (StringFormat sf = new StringFormat())
+                    {
+                        if (i >= 1 && i <= 6) sf.Alignment = StringAlignment.Far;
+                        g.DrawString(head[i], F(10, FontStyle.Regular), b, new RectangleF(x, top, colW[i], S(16)), sf);
+                    }
+                    x += colW[i];
+                }
+            }
+            using (Pen pen = new Pen(Color.FromArgb(16, 255, 255, 255), 1f))
+                g.DrawLine(pen, left, top + S(20), right, top + S(20));
+
+            float rowH = S(28);
+            float listTop = top + S(26);
+            int visible = (int)((r.Bottom - S(14) - listTop) / rowH);
+            if (visible < 1) visible = 1;
+            if (_monthScroll > _months.Count - visible) _monthScroll = Math.Max(0, _months.Count - visible);
+            if (_monthScroll < 0) _monthScroll = 0;
+
+            double maxKwh = 0.001;
+            for (int i = 0; i < _months.Count; i++) if (_months[i].Kwh > maxKwh) maxKwh = _months[i].Kwh;
+
+            DateTime curMonth = new DateTime(DateTime.Today.Year, DateTime.Today.Month, 1);
+            for (int i = 0; i < visible; i++)
+            {
+                int idx = _monthScroll + i;
+                if (idx >= _months.Count) break;
+                MonthStat m = _months[idx];
+                float y = listTop + i * rowH;
+                bool isCur = m.Month == curMonth;
+                if (isCur)
+                {
+                    using (GraphicsPath p = IconFactory.RoundRect(new RectangleF(left - S(6), y, right - left + S(12), rowH - S(2)), S(6)))
+                    using (SolidBrush b = new SolidBrush(Color.FromArgb(24, Accent)))
+                        g.FillPath(b, p);
+                }
+                else if (i % 2 == 1)
+                {
+                    using (SolidBrush b = new SolidBrush(Color.FromArgb(8, 255, 255, 255)))
+                        g.FillRectangle(b, left - S(6), y, right - left + S(12), rowH - S(2));
+                }
+
+                string[] cells = new string[] {
+                    m.Month.ToString("yyyy-MM"),
+                    m.Kwh.ToString("0.00", CultureInfo.InvariantCulture) + " kWh",
+                    "¥" + m.Cost.ToString("0.00", CultureInfo.InvariantCulture),
+                    m.AvgW.ToString("0.0", CultureInfo.InvariantCulture) + " W",
+                    m.PeakW.ToString("0.0", CultureInfo.InvariantCulture) + " W",
+                    FormatMinutes(m.Minutes),
+                    m.Sessions.ToString(CultureInfo.InvariantCulture)
+                };
+                float cx = left;
+                for (int c = 0; c < cells.Length; c++)
+                {
+                    using (SolidBrush b = new SolidBrush(c == 0 ? (isCur ? Color.FromArgb(255, 180, 210, 255) : TextMain) : TextSec))
+                    using (StringFormat sf = new StringFormat())
+                    {
+                        if (c >= 1) sf.Alignment = StringAlignment.Far;
+                        sf.LineAlignment = StringAlignment.Center;
+                        g.DrawString(cells[c], F(10.5f, FontStyle.Regular), b, new RectangleF(cx, y, colW[c], rowH), sf);
+                    }
+                    cx += colW[c];
+                }
+
+                // 迷你条
+                float barX = cx + S(2);
+                float barW = Math.Min(colW[7] - S(10), right - barX);
+                if (barW > S(20) && m.Kwh > 0)
+                {
+                    RectangleF track = new RectangleF(barX, y + rowH / 2 - S(3), barW, S(6));
+                    using (GraphicsPath p = IconFactory.RoundRect(track, S(3)))
+                    using (SolidBrush b = new SolidBrush(Color.FromArgb(20, 255, 255, 255)))
+                        g.FillPath(b, p);
+                    float frac = (float)(m.Kwh / maxKwh);
+                    RectangleF fill = new RectangleF(track.X, track.Y, Math.Max(S(4), (float)(track.Width * frac)), track.Height);
+                    using (GraphicsPath p = IconFactory.RoundRect(fill, S(3)))
+                    using (LinearGradientBrush b = new LinearGradientBrush(fill,
+                        Color.FromArgb(230, 120, 186, 255), Color.FromArgb(160, 150, 130, 255), 0f))
+                        g.FillPath(b, p);
+                }
+            }
+
+            if (_months.Count > visible)
+            {
+                using (SolidBrush b = new SolidBrush(TextTer))
+                using (StringFormat sf = new StringFormat())
+                {
+                    sf.Alignment = StringAlignment.Far;
+                    g.DrawString("滚轮翻页 " + (_monthScroll + 1) + "–" + Math.Min(_months.Count, _monthScroll + visible) + " / " + _months.Count,
+                        F(9.5f, FontStyle.Regular), b, new RectangleF(r.Left, r.Bottom - S(24), r.Width - S(14), S(16)), sf);
+                }
+            }
+        }
+
         void DrawSessions(Graphics g)
         {
             RectangleF r = _rTable;
@@ -928,6 +1160,7 @@ namespace PowerMonitor
             if (_rClose.Contains(p)) { Hide(); return; }
             if (_rView0.Contains(p)) { _view = 0; Invalidate(); return; }
             if (_rView1.Contains(p)) { _view = 1; Invalidate(); return; }
+            if (_rView2.Contains(p)) { _view = 2; Invalidate(); return; }
             for (int i = 0; i < 4; i++)
                 if (_rRange[i].Contains(p)) { _range = i; _view = 0; Invalidate(); return; }
             if (_rRefresh.Contains(p)) { Invalidate(); return; }
@@ -947,6 +1180,12 @@ namespace PowerMonitor
             {
                 _scroll -= Math.Sign(e.Delta) * 2;
                 if (_scroll < 0) _scroll = 0;
+                Invalidate();
+            }
+            else if (_view == 2)
+            {
+                _monthScroll -= Math.Sign(e.Delta) * 2;
+                if (_monthScroll < 0) _monthScroll = 0;
                 Invalidate();
             }
         }

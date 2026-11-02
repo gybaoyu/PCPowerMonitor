@@ -8,11 +8,12 @@
 
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D4?logo=windows&logoColor=white)](#兼容性)
 [![.NET](https://img.shields.io/badge/.NET%20Framework-4.8-512BD4?logo=dotnet&logoColor=white)](#自行编译)
-[![Size](https://img.shields.io/badge/size-447%20KB-brightgreen)](#)
+[![Size](https://img.shields.io/badge/size-455%20KB-brightgreen)](#)
+[![Release](https://img.shields.io/badge/release-v1.1.0-2ea44f)](../../releases)
 [![Deps](https://img.shields.io/badge/dependencies-0-blue)](#功能)
 [![License](https://img.shields.io/badge/license-MIT-yellow)](LICENSE)
 
-[功能](#功能) · [截图](#截图) · [快速开始](#快速开始) · [数据来源](#数据来源与精度说清楚) · [配置](#配置) · [自行编译](#自行编译) · [FAQ](#faq)
+[功能](#功能) · [截图](#截图) · [快速开始](#快速开始) · [数据来源](#数据来源与精度说清楚) · [配置](#配置) · [更新日志](#更新日志) · [FAQ](#faq)
 
 </div>
 
@@ -20,11 +21,12 @@
 
 ## 这是什么
 
-一个 447 KB 的单文件 Windows 托盘小工具，用系统自带的 .NET Framework 运行，**不装任何运行时、不需要管理员权限**。
+一个 455 KB 的单文件 Windows 托盘小工具，用系统自带的 .NET Framework 运行，**不装任何运行时、不需要管理员权限**。
 
 - **实时**：托盘图标就是当前整机功率数字，按负载变色（绿 → 黄 → 红）；左键弹出实时浮层
 - **记账**：每分钟落盘一次功率，按开机批次记录总耗电、平均/峰值功率、CPU/GPU 分项
-- **可查**：右键「功耗统计…」打开仪表盘，曲线、柱状图、构成环图、每次开机的会话表，支持导出 CSV
+- **可查**：右键「功耗统计…」打开仪表盘，曲线、柱状图、构成环图、每次开机的会话表、**月度账单**，支持导出 CSV
+- **管预算**：设置每月电费预算，用到 80 % / 100 % 时托盘弹出提醒，并给出按当月进度推算的月末账单
 - **省电**：常驻 0.05 % 单核、空闲工作集约 6 MB；开机自启，无 UAC 弹窗
 
 > 适用于台式机与笔记本。台式机没有电池读数，所以「整机功率」= CPU 实测 + GPU 估算 + 平台经验值，详见[数据来源](#数据来源与精度说清楚)。
@@ -49,6 +51,7 @@
 - 用电构成环图：CPU / GPU / 平台 的 Wh 与占比
 - 时间范围：**本次开机 / 今天 / 近 7 天 / 近 30 天**，超过 340 点自动降采样
 - 会话记录表：每次开机一行，当前这次显示「进行中」，滚轮翻页
+- **月度账单**：本月用电/电费/预算进度/月末预测/峰值五张卡 + 近 12 个月明细（带电费、平均/峰值功率、运行时长、开机次数与相对条形）
 - 一键导出 CSV、点击数据目录直达文件夹
 
 ## 截图
@@ -65,6 +68,10 @@
 
 ![会话记录](shots/stats-sessions.png)
 
+**月度账单与电费预算**
+
+![月度账单](shots/stats-months.png)
+
 **左键弹出的实时浮层**
 
 ![实时浮层](shots/card.png)
@@ -75,7 +82,7 @@
 
 ### 方式一：直接用
 
-1. 下载 [`build/PowerMonitor.exe`](build/PowerMonitor.exe)
+1. 下载 [Releases 里的 `PCPowerMonitor-1.1.0.zip`](../../releases)（含 exe + 说明），或直接取仓库里的 [`build/PowerMonitor.exe`](build/PowerMonitor.exe)
 2. 双击运行，托盘出现数字图标即成
 3. 首次启动会**自动写入开机自启**（`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`），可在右键菜单里关掉
 
@@ -135,7 +142,11 @@ GpuTgpW=115.0      # 显卡满载功耗上限
 GpuIdleW=8.0       # 显卡空载基线
 PricePerKwh=0.60   # 电费单价（元/kWh），用于估算电费
 CpuMaxW=200        # CPU 功率可信上限，超出视为毛刺
+RetentionDays=60   # 历史保留天数（7-730），想看年报表就调大
+MonthlyBudgetYuan=0  # 每月电费预算（元），0 = 关闭超支提醒
 ```
+
+预算提醒：本月电费达到预算的 80 % 与 100 % 时各弹一次气泡（同一档位每月只提醒一次，状态记在 `BudgetAlertState`）。
 
 ## 数据文件
 
@@ -153,7 +164,7 @@ CpuMaxW=200        # CPU 功率可信上限，超出视为毛刺
 id, 开机时间, 首次采样, 末次采样, 电量Wh, CPUWh, GPUWh, 平台Wh, 峰值W, 峰值时刻, 采样数
 ```
 
-统计窗口的「导出 CSV」会生成可读版明细（平均/最大/最小/样本数/分项平均）。
+两份文件都按 `RetentionDays`（默认 60 天）自动裁剪；统计窗口的「导出 CSV」会生成可读版明细（平均/最大/最小/样本数/分项平均）。
 
 ## 命令行
 
@@ -175,7 +186,7 @@ src/app.manifest       PerMonitorV2 DPI 感知 + asInvoker
 tools/make-icon.ps1    生成 assets/app.ico（9 种尺寸）
 assets/app.ico         程序图标
 build/PowerMonitor.exe 预编译产物
-shots/*.png            README 截图
+shots/*.png            README 截图（含月度账单）
 ```
 
 ## 兼容性
@@ -208,10 +219,23 @@ RTX 4060 这类不暴露功率传感器的卡，误差在「同利用率下 ±20
 
 ## Roadmap
 
-- [ ] 按月/按年汇总与电费预算提醒
+- [x] ~~按月汇总与电费预算提醒~~（v1.1.0 已实现）
 - [ ] 分钟桶迁移到 SQLite，支持更长历史与更细查询
 - [ ] 自定义托盘主题（纯色数字 / 圆角卡片 / 深浅色自适应）
 - [ ] 多显卡 / 多路 RAPL 域支持
+
+## 更新日志
+
+### v1.1.0 — 2026-11-02
+- 新增 **月度账单** 页：本月用电/电费/预算进度/月末预测/峰值五张卡，以及近 12 个月明细（电费、平均/峰值功率、运行时长、开机次数、相对条形）
+- 新增 **电费预算提醒**：本月费用到预算的 80 % 与 100 % 时托盘弹气泡，每个档位每月只提醒一次
+- 新增配置项 `MonthlyBudgetYuan`（预算）与 `RetentionDays`（历史保留 7–730 天）
+- 修复：统计窗口在 150 % 缩放下尺寸偏小（改用 `GetDpiForWindow` 取每窗口 DPI）
+- 修复：RAPL 偶发毛刺会把峰值顶到 300 W 以上（增加 `CpuMaxW` 上限与突变过滤）
+- 修复：分钟桶电量按整分钟外推，首尾不完整的分钟会虚高（改为按采样间隔 `P × Δt` 积分）
+
+### v1.0.0 — 2026-11-02
+- 首个版本：托盘实时功率、左键浮层、统计仪表盘、会话记录、CSV 导出、开机自启
 
 ## English
 

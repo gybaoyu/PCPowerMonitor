@@ -238,6 +238,9 @@ namespace PowerMonitor
                 if (_buckets.Count != before) _rewriteAll = true;
                 _written = _buckets.Count;
 
+                int sessBefore = _sessions.Count;
+                _sessions.RemoveAll(delegate(HistorySession x) { return x.Boot < cutoff; });
+
                 string id = BootTime.ToString("yyyyMMddHHmm", CultureInfo.InvariantCulture);
                 foreach (HistorySession s in _sessions)
                     if (s.Id == id) { _session = s; break; }
@@ -450,6 +453,25 @@ namespace PowerMonitor
                 {
                     HistoryBucket b = _buckets[i];
                     if (b.Ts < today) break;
+                    wh += b.Wh;
+                }
+                return wh;
+            }
+        }
+
+        // 某个月（传入该月任意一天）的用电量 Wh
+        public double MonthWh(DateTime anyDay)
+        {
+            lock (_lock)
+            {
+                DateTime from = new DateTime(anyDay.Year, anyDay.Month, 1);
+                DateTime to = from.AddMonths(1);
+                double wh = 0;
+                for (int i = _buckets.Count - 1; i >= 0; i--)
+                {
+                    HistoryBucket b = _buckets[i];
+                    if (b.Ts >= to) continue;
+                    if (b.Ts < from) break;
                     wh += b.Wh;
                 }
                 return wh;

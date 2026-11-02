@@ -22,8 +22,8 @@ using Microsoft.Win32;
 [assembly: AssemblyTitle("PowerMonitor")]
 [assembly: AssemblyDescription("轻量托盘功耗监视器：整机 / CPU / GPU 功率")]
 [assembly: AssemblyProduct("PowerMonitor")]
-[assembly: AssemblyVersion("1.0.0.0")]
-[assembly: AssemblyFileVersion("1.0.0.0")]
+[assembly: AssemblyVersion("1.1.0.0")]
+[assembly: AssemblyFileVersion("1.1.0.0")]
 
 namespace PowerMonitor
 {
@@ -155,6 +155,9 @@ namespace PowerMonitor
         public double GpuIdleW = 8.0;
         public double PricePerKwh = 0.6;  // 电费单价（元/kWh），用于估算电费
         public double CpuMaxW = 200.0;    // CPU 功率可信上限，超过视为传感器毛刺
+        public int RetentionDays = 60;    // 历史保留天数（7-730）
+        public double MonthlyBudgetYuan;  // 每月电费预算（元），0 = 关闭提醒
+        public string BudgetAlertState = ""; // 形如 2026-11:80，记录已提醒过的档位
         public bool FirstRun;
 
         static int ClampInt(string s, int lo, int hi, int def)
@@ -193,6 +196,9 @@ namespace PowerMonitor
                     else if (k == "GpuIdleW") GpuIdleW = ClampDouble(v, 1, 80, 8);
                     else if (k == "PricePerKwh") PricePerKwh = ClampDouble(v, 0, 10, 0.6);
                     else if (k == "CpuMaxW") CpuMaxW = ClampDouble(v, 30, 800, 200);
+                    else if (k == "RetentionDays") RetentionDays = ClampInt(v, 7, 730, 60);
+                    else if (k == "MonthlyBudgetYuan") MonthlyBudgetYuan = ClampDouble(v, 0, 100000, 0);
+                    else if (k == "BudgetAlertState") BudgetAlertState = v;
                 }
             }
             catch (Exception ex) { Paths.Log("settings load: " + ex.Message); }
@@ -210,6 +216,8 @@ namespace PowerMonitor
                 sb.AppendLine("# GpuTgpW, GpuIdleW  GPU 功率模型的满载/空载瓦数");
                 sb.AppendLine("# PricePerKwh  电费单价（元/kWh），用于估算电费");
                 sb.AppendLine("# CpuMaxW      CPU 功率可信上限（超出视为 RAPL 毛刺并丢弃）");
+                sb.AppendLine("# RetentionDays  历史保留天数（7-730）");
+                sb.AppendLine("# MonthlyBudgetYuan  每月电费预算（元），0 = 关闭超支提醒");
                 sb.AppendLine("IntervalMs=" + IntervalMs.ToString(CultureInfo.InvariantCulture));
                 sb.AppendLine("TrayMetric=" + TrayMetric.ToString(CultureInfo.InvariantCulture));
                 sb.AppendLine("PlatformW=" + PlatformW.ToString("0.0", CultureInfo.InvariantCulture));
@@ -217,6 +225,9 @@ namespace PowerMonitor
                 sb.AppendLine("GpuIdleW=" + GpuIdleW.ToString("0.0", CultureInfo.InvariantCulture));
                 sb.AppendLine("PricePerKwh=" + PricePerKwh.ToString("0.00", CultureInfo.InvariantCulture));
                 sb.AppendLine("CpuMaxW=" + CpuMaxW.ToString("0", CultureInfo.InvariantCulture));
+                sb.AppendLine("RetentionDays=" + RetentionDays.ToString(CultureInfo.InvariantCulture));
+                sb.AppendLine("MonthlyBudgetYuan=" + MonthlyBudgetYuan.ToString("0.##", CultureInfo.InvariantCulture));
+                sb.AppendLine("BudgetAlertState=" + (BudgetAlertState == null ? "" : BudgetAlertState));
                 File.WriteAllText(Paths.ConfigFile, sb.ToString(), Encoding.UTF8);
             }
             catch (Exception ex) { Paths.Log("settings save: " + ex.Message); }
@@ -1107,6 +1118,7 @@ namespace PowerMonitor
         Color _iconColor = Color.Empty;
         Reading _last;
         DateTime _lastTime = DateTime.MinValue;
+        DateTime _lastBudgetCheck = DateTime.MinValue;
         double _wh;
         bool _exiting;
         HistoryStore _history;
@@ -1151,6 +1163,7 @@ namespace PowerMonitor
                 _cfg.Save();
             }
             _history = new HistoryStore();
+            _history.RetentionDays = _cfg.RetentionDays;
             _history.Load();
             _sampler = new Sampler(_cfg);
             _sampler.Update += OnSample;
@@ -1253,6 +1266,8 @@ namespace PowerMonitor
                                 f.SaveSnapshot(System.IO.Path.Combine(dir2, stem + "-hover.png"));
                                 f.View = 1;
                                 f.SaveSnapshot(System.IO.Path.Combine(dir2, stem + "-sessions.png"));
+                                f.View = 2;
+                                f.SaveSnapshot(System.IO.Path.Combine(dir2, stem + "-months.png"));
                             }
                         }
                     }
@@ -1404,6 +1419,12 @@ namespace PowerMonitor
             _history.AddSample(r, dt);
             _history.Flush(false);
 
+            if ((r.Time - _lastBudgetCheck).TotalSeconds >= 30)
+            {
+                _lastBudgetCheck = r.Time;
+                CheckBudget();
+            }
+
             RefreshTray(r);
             if (_card.Visible) _card.UpdateData(r, _hist, _wh, _cfg);
             if (_stats != null && !_stats.IsDisposed && _stats.Visible) _stats.NotifyData(r);
@@ -1464,6 +1485,36 @@ namespace PowerMonitor
         static string W1(double v)
         {
             return v < 0 ? "--" : v.ToString("0.0", CultureInfo.InvariantCulture);
+        }
+
+        // 月度电费预算提醒：80% / 100% 各提醒一次（每月）
+        void CheckBudget()
+        {
+            try
+            {
+                if (_cfg.MonthlyBudgetYuan <= 0) return;
+                DateTime now = DateTime.Now;
+                double wh = _history.MonthWh(now);
+                if (wh <= 0) return;
+                double cost = wh / 1000.0 * _cfg.PricePerKwh;
+                double pct = cost / _cfg.MonthlyBudgetYuan * 100.0;
+                int level = pct >= 100 ? 100 : (pct >= 80 ? 80 : 0);
+                if (level == 0) return;
+
+                string monthKey = now.ToString("yyyy-MM", CultureInfo.InvariantCulture);
+                string state = _cfg.BudgetAlertState == null ? "" : _cfg.BudgetAlertState;
+                if (state.StartsWith(monthKey + ":100", StringComparison.Ordinal)) return;
+                if (level == 80 && state.StartsWith(monthKey + ":80", StringComparison.Ordinal)) return;
+
+                _cfg.BudgetAlertState = monthKey + ":" + level;
+                _cfg.Save();
+
+                string title = level >= 100 ? "本月电费已超预算" : "本月电费接近预算";
+                string text = string.Format("已用 ¥{0:0.00} / 预算 ¥{1:0.00}（{2:0}%）\n本月用电 {3:0.00} kWh · 单价 ¥{4:0.00}/kWh",
+                    cost, _cfg.MonthlyBudgetYuan, pct, wh / 1000.0, _cfg.PricePerKwh);
+                _ni.ShowBalloonTip(6000, title, text, level >= 100 ? ToolTipIcon.Error : ToolTipIcon.Warning);
+            }
+            catch (Exception ex) { Paths.Log("budget: " + ex.Message); }
         }
 
         void ShowPanel()

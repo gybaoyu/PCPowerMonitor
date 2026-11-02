@@ -14,3 +14,6 @@ shots/*-debug*.png
 # 图标生成脚本的中间产物
 assets/icon-preview-*.png
 shots/tray16*.png
+
+# 发布打包产物（由 Release 提供）
+dist/

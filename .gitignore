@@ -1,0 +1,16 @@
+# 构建产物（只提交可执行文件，供直接下载使用）
+build/*
+!build/PowerMonitor.exe
+
+# 本地临时文件
+*.log
+*.pdb
+*.user
+.vs/
+.idea/
+shots/*-live*.png
+shots/*-debug*.png
+
+# 图标生成脚本的中间产物
+assets/icon-preview-*.png
+shots/tray16*.png
